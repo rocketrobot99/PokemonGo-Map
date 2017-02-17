@@ -525,9 +525,9 @@ class SpeedScan(HexSearch):
         db_update_queue.put((ScannedLocation, initial))
         log.info('%d steps created', len(scans))
         self.band_spacing = int(10 * 60 / len(scans))
-        self.band_status()
+        init_scan_percent = self.band_status()
         spawnpoints = SpawnPoint.select_in_hex(
-            self.scan_location, self.args.step_limit)
+            self.scan_location, self.args.step_limit, self.scans.keys())
         if not spawnpoints:
             log.info('No spawnpoints in hex found in SpawnPoint table. ' +
                      'Doing initial scan.')
@@ -545,6 +545,21 @@ class SpeedScan(HexSearch):
             db_update_queue.put((ScanSpawnPoint, scan_spawn_point))
         else:
             log.info('Spawn points assigned')
+
+        # Here we are estimating the number of scans per hour in order to
+        # be able to assign the right number of workers
+        # If the initial scan is less than 20% then return 5x the
+        # number of steps (one for each band) + an average 2x the
+        # number of steps (guessing 2 spawnpoints per step)
+        if init_scan_percent < 20:
+             return 7 * len(scans)
+        # If the initial scan is more than 20% return 5x the
+        # number of steps (one for each band) + between 1x and 2x the
+        # number of spawnpoints (Just an estimate based on % scanned)
+        if init_scan_percent < 100:
+             return (len(spawnpoints) * (1 + int((100 - init_scan_percent)/80))) + (5 * len(scans))
+        # Otherwise we are just scanning spawnpoints
+        return len(spawnpoints)
 
     # Generates the list of locations to scan
     # Created a new function, because speed scan requires fixed locations,
@@ -701,13 +716,19 @@ class SpeedScan(HexSearch):
             for sp in sps:
                 sp_by_id[sp['id']] = sp
 
+        # 2 iterations, one to add the step locations and other to add SPs
         for cell, scan in self.scans.iteritems():
             queue += ScannedLocation.get_times(scan, now_date,
                                                scanned_locations)
+        # scans per hour is 5x the number of steps (one for each band)
+        scans_per_hour = len(queue) * 5
+        for cell, scan in self.scans.iteritems():
             queue += SpawnPoint.get_times(cell, scan, now_date,
                                           self.args.spawn_delay,
                                           cell_to_linked_spawn_points,
                                           sp_by_id)
+        # Then add on the number of spawnpoints
+        scans_per_hour += len(queue)
         end = time.time()
 
         queue.sort(key=itemgetter('start'))
@@ -748,7 +769,7 @@ class SpeedScan(HexSearch):
                 good_percent = 100.0
                 spawns_reached = 100.0
                 spawnpoints = SpawnPoint.select_in_hex(
-                    self.scan_location, self.args.step_limit)
+                    self.scan_location, self.args.step_limit,self.scans.keys())
                 for sp in spawnpoints:
                     if sp['missed_count'] > 5:
                         continue
@@ -856,6 +877,7 @@ class SpeedScan(HexSearch):
                     'Performance statistics had an Exception: {}'.format(
                         repr(e)))
                 traceback.print_exc(file=sys.stdout)
+        return scans_per_hour
 
     # Find the best item to scan next
     def next_item(self, status):

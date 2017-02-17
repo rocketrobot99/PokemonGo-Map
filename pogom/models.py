@@ -922,10 +922,24 @@ class ScannedLocation(BaseModel):
     # Return list of dicts for upcoming valid band times.
     @classmethod
     def get_cell_to_linked_spawn_points(cls, cells):
+
+        # As scan locations overlap, spawnpoints can belong to up to 3 locations
+        # This sub-query effectively assigns each SP to exactly one location.
+        single_spawn_scan_loc = (ScanSpawnPoint
+                               .select(ScanSpawnPoint.spawnpoint,
+                                       fn.MAX(ScanSpawnPoint.scannedlocation).alias(
+                                           'Max_ScannedLocation_id')
+                                       )
+                               .group_by(ScanSpawnPoint.spawnpoint)
+                               .alias('maxscan')
+                               )
+
+
         query = (SpawnPoint
                  .select(SpawnPoint, cls.cellid)
-                 .join(ScanSpawnPoint)
-                 .join(cls)
+                 .join(single_spawn_scan_loc, on=(SpawnPoint.id ==
+                                                  single_spawn_scan_loc.c.spawnpoint_id))
+                 .join(cls, on=(cls.cellid == single_spawn_scan_loc.c.Max_scannedLocation_id))
                  .where(cls.cellid << cells).dicts())
         l = list(query)
         ret = {}
@@ -1334,37 +1348,32 @@ class SpawnPoint(BaseModel):
                     3600) / 15 / 60)
 
     @classmethod
-    def select_in_hex(cls, center, steps):
+    def select_in_hex(cls, center, steps, cells):
         R = 6378.1  # KM radius of the earth
         hdist = ((steps * 120.0) - 50.0) / 1000.0
         n, e, s, w = hex_bounds(center, steps)
 
         # Get all spawns in that box.
+	one_sp_scan_loc = (ScanSpawnPoint
+                            .select(ScanSpawnPoint.spawnpoint,
+                                   fn.MAX(ScanSpawnPoint.scannedlocation).alias(
+                                'Max_ScannedLocation_id'))
+                            .group_by(ScanSpawnPoint.spawnpoint)
+                            .alias('maxscan'))
+
         sp = list(cls
-                  .select()
+                  .select(cls)
+                  .join(one_sp_scan_loc,
+                            on=(one_sp_scan_loc.c.spawnpoint_id == cls.id))
                   .where((cls.latitude <= n) &
                          (cls.latitude >= s) &
                          (cls.longitude >= w) &
-                         (cls.longitude <= e))
+                         (cls.longitude <= e) &
+		                 (one_sp_scan_loc.c.Max_ScannedLocation_id << cells))
                   .dicts())
 
-        # For each spawn work out if it is in the hex (clipping the diagonals).
         in_hex = []
         for spawn in sp:
-            # Get the offset from the center of each spawn in km.
-            offset = [math.radians(spawn['latitude'] - center[0]) * R,
-                      math.radians(spawn['longitude'] - center[1]) *
-                      (R * math.cos(math.radians(center[0])))]
-            # Check against the 4 lines that make up the diagonals.
-            if (offset[1] + (offset[0] * 0.5)) > hdist:  # Too far NE
-                continue
-            if (offset[1] - (offset[0] * 0.5)) > hdist:  # Too far SE
-                continue
-            if ((offset[0] * 0.5) - offset[1]) > hdist:  # Too far NW
-                continue
-            if ((0 - offset[1]) - (offset[0] * 0.5)) > hdist:  # Too far SW
-                continue
-            # If it gets to here it's a good spawn.
             in_hex.append(spawn)
         return in_hex
 
