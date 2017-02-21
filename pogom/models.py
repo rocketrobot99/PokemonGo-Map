@@ -17,7 +17,7 @@ from peewee import InsertQuery, \
     OperationalError
 from playhouse.flask_utils import FlaskDB
 from playhouse.pool import PooledMySQLDatabase
-from playhouse.shortcuts import RetryOperationalError
+from playhouse.shortcuts import RetryOperationalError, case
 from playhouse.migrate import migrate, MySQLMigrator, SqliteMigrator
 from playhouse.sqlite_ext import SqliteExtDatabase
 from datetime import datetime, timedelta
@@ -42,6 +42,7 @@ db_schema_version = 13
 
 class MyRetryDB(RetryOperationalError, PooledMySQLDatabase):
     pass
+
 
 
 def init_database(app):
@@ -871,6 +872,64 @@ class ScannedLocation(BaseModel):
         return d
 
     @classmethod
+    def get_by_cells(cls, cells):
+
+        query = (cls
+                 .select()
+                 .where(ScannedLocation.cellid << cells)
+                 .dicts())
+
+        d = {}
+        for sl in list(query):
+            key = "{},{}".format(sl['latitude'], sl['longitude'])
+            d[key] = sl
+
+        return d
+
+    @classmethod
+    def get_band_count_by_cells(cls, cells):
+
+        query = (cls
+                 .select()
+                 .where(ScannedLocation.cellid << cells)
+                 .dicts())
+
+        filled = 0
+        for sl in query:
+            bands = [sl['band' + str(i)] for i in range(1, 6)]
+            filled += reduce(lambda x, y: x + (y > -1), bands, 0)
+
+        return filled
+
+    @classmethod
+    def eget_band_count_by_cells(cls, cells):
+
+        query = (cls
+                 .select(fn.SUM(case(None, (
+                    (cls.band1 >= 0 , 1)), 0)+case(None, (
+                    (cls.band3 >= 0 , 1)), 0)+case(None, (
+                    (cls.band4 >= 0 , 1)), 0)+case(None, (
+                    (cls.band5 >= 0 , 1)), 0)).alias('band_count'))
+                 .where(ScannedLocation.cellid << cells)
+                 ).scalar()
+
+        return query[0]
+
+    @classmethod
+    def fget_band_count_by_cells(cls, cells):
+
+        return (ScannedLocation
+                 .select(fn.SUM(fn.IF(ScannedLocation.band1==-1, 0, 1)
+                        +fn.IF(ScannedLocation.band2==-1, 0, 1)
+                        +fn.IF(ScannedLocation.band3==-1, 0, 1)
+                        +fn.IF(ScannedLocation.band4==-1, 0, 1)
+                        +fn.IF(ScannedLocation.band5==-1, 0, 1)).alias('band_count'))
+                 .where(ScannedLocation.cellid << cells)
+                 .scalar())
+
+
+
+    @classmethod
     def find_in_locs(cls, loc, locs):
         key = "{},{}".format(loc[0], loc[1])
         return locs[key] if key in locs else cls.new_loc(loc)
@@ -923,24 +982,29 @@ class ScannedLocation(BaseModel):
     @classmethod
     def get_cell_to_linked_spawn_points(cls, cells):
 
+        # Get all spawnpoints from the hive's cells
+        sp_from_cells = (ScanSpawnPoint
+                         .select(ScanSpawnPoint.spawnpoint)
+                         .where(ScanSpawnPoint.scannedlocation << cells)
+                         .alias('spcells'))
+        # Allocate a spawnpoint to one cell only
+        one_sp_scan_loc = (ScanSpawnPoint
+                            .select(ScanSpawnPoint.spawnpoint,
+                                   fn.MAX(ScanSpawnPoint.scannedlocation).alias(
+                                'cellid'))
+                            .join(sp_from_cells, on=sp_from_cells.c.spawnpoint_id
+                                        == ScanSpawnPoint.spawnpoint)
+                            .group_by(ScanSpawnPoint.spawnpoint)
+                            .alias('maxscan'))
         # As scan locations overlap, spawnpoints can belong to up to 3 locations
         # This sub-query effectively assigns each SP to exactly one location.
-        single_spawn_scan_loc = (ScanSpawnPoint
-                               .select(ScanSpawnPoint.spawnpoint,
-                                       fn.MAX(ScanSpawnPoint.scannedlocation).alias(
-                                           'Max_ScannedLocation_id')
-                                       )
-                               .group_by(ScanSpawnPoint.spawnpoint)
-                               .alias('maxscan')
-                               )
-
 
         query = (SpawnPoint
-                 .select(SpawnPoint, cls.cellid)
-                 .join(single_spawn_scan_loc, on=(SpawnPoint.id ==
-                                                  single_spawn_scan_loc.c.spawnpoint_id))
-                 .join(cls, on=(cls.cellid == single_spawn_scan_loc.c.Max_scannedLocation_id))
-                 .where(cls.cellid << cells).dicts())
+                 .select(SpawnPoint, one_sp_scan_loc.c.cellid)
+                 .join(one_sp_scan_loc, on=(SpawnPoint.id ==
+                                    one_sp_scan_loc.c.spawnpoint_id))
+                 .where(one_sp_scan_loc.c.cellid << cells)
+                 .dicts())
         l = list(query)
         ret = {}
         for item in l:
@@ -1040,10 +1104,10 @@ class ScannedLocation(BaseModel):
         return scan
 
     @classmethod
-    def bands_filled(cls, locations):
+    def bands_filled(cls, cells):
         filled = 0
-        for e in locations:
-            sl = cls.get_by_loc(e[1])
+        for e in cells:
+            sl = cls.get_by_cells(e)
             bands = [sl['band' + str(i)] for i in range(1, 6)]
             filled += reduce(lambda x, y: x + (y > -1), bands, 0)
 
@@ -1346,35 +1410,40 @@ class SpawnPoint(BaseModel):
     def get_quartile(secs, sp):
         return int(((secs - sp['earliest_unseen'] + 15 * 60 + 3600 - 1) %
                     3600) / 15 / 60)
+    @classmethod
+    def raw_sql(query):
+        db = query.model_class._meta.database
+        return query.sql(db.get_compiler())
 
     @classmethod
     def select_in_hex(cls, center, steps, cells):
-        R = 6378.1  # KM radius of the earth
-        hdist = ((steps * 120.0) - 50.0) / 1000.0
-        n, e, s, w = hex_bounds(center, steps)
-
-        # Get all spawns in that box.
-	one_sp_scan_loc = (ScanSpawnPoint
+        # Get all spawnpoints from the hive's cells
+        sp_from_cells = (ScanSpawnPoint
+                         .select(ScanSpawnPoint.spawnpoint)
+                         .where(ScanSpawnPoint.scannedlocation << cells)
+                         .alias('spcells'))
+        # Allocate a spawnpoint to one cell only
+        one_sp_scan_loc = (ScanSpawnPoint
                             .select(ScanSpawnPoint.spawnpoint,
                                    fn.MAX(ScanSpawnPoint.scannedlocation).alias(
                                 'Max_ScannedLocation_id'))
+                            .join(sp_from_cells, on=sp_from_cells.c.spawnpoint_id
+                                        == ScanSpawnPoint.spawnpoint)
                             .group_by(ScanSpawnPoint.spawnpoint)
                             .alias('maxscan'))
 
-        sp = list(cls
+        query = (cls
                   .select(cls)
                   .join(one_sp_scan_loc,
                             on=(one_sp_scan_loc.c.spawnpoint_id == cls.id))
-                  .where((cls.latitude <= n) &
-                         (cls.latitude >= s) &
-                         (cls.longitude >= w) &
-                         (cls.longitude <= e) &
-		                 (one_sp_scan_loc.c.Max_ScannedLocation_id << cells))
+                  .where(one_sp_scan_loc.c.Max_ScannedLocation_id << cells)
                   .dicts())
-
+        log.info(query.database.get_cursor().mogrify(*query.sql()))
+        #print cls.raw_sql(query)
         in_hex = []
-        for spawn in sp:
+        for spawn in list(query):
             in_hex.append(spawn)
+        log.info('done')
         return in_hex
 
 

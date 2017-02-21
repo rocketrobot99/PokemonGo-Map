@@ -474,7 +474,7 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
                         repr(e)))
                 traceback.print_exc(file=sys.stdout)
                 time.sleep(10)
-	    decim_p, whole_n =math.modf((spawns / 60))
+	    decim_p, whole_n =math.modf((spawns / 120))
 	    worker_running_total += (whole_n+1)
 	    print 'hive number {}'.format(hive_number)
 	    hive_number += 1
@@ -574,7 +574,7 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
                     time.sleep(10)
 		#print spawns
 		spawn_count[i] = spawns
-		decim_p, whole_n =math.modf((spawns / 60))
+		decim_p, whole_n =math.modf((spawns / 120))
 		whole_n = whole_n + 1
 		worker_running_total = 0
 		for j in range(0, len(worker_hive_array)):
@@ -595,7 +595,7 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
         for i in range(0, len(scheduler_array)):
 	    spawns = spawn_count[i]
 	    #print spawns
-	    decim_p, whole_n =math.modf((spawns / 60))
+	    decim_p, whole_n =math.modf((spawns / 120))
 	    whole_n = whole_n + 1
 	    worker_running_total = 0
 	    for j in range(0, len(worker_hive_array)):
@@ -681,7 +681,7 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
                                 repr(e)))
                         traceback.print_exc(file=sys.stdout)
                         time.sleep(10)
-	            decim_p, whole_n =math.modf((spawns / 60))
+	            decim_p, whole_n =math.modf((spawns / 120))
 	            worker_running_total += (whole_n+1)
 	            #print 'hive number {}'.format(hive_number)
 	            hive_number += 1
@@ -805,8 +805,9 @@ def get_stats_message(threadStatus):
     return message
 
 
-def update_total_stats(threadStatus, last_account_status):
-    overseer = threadStatus['Overseer']
+def update_total_stats(threadStatus2, last_account_status):
+    threadStatus = copy.deepcopy(threadStatus2)
+    overseer = threadStatus2['Overseer']
 
     # Calculate totals.
     usercount = 0
