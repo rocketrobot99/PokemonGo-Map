@@ -362,7 +362,6 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
     current_location = False
     spawn_count = []
 
-
     '''
     Create a queue of accounts for workers to pull from. When a worker has
     failed too many times, it can get a new account from the queue and
@@ -445,13 +444,14 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
             pass
         step_distance = 0.45 if args.no_pokemon else 0.07
 
-
     log.info('Starting search worker threads...')
     for i in range(0, args.workers):
         log.debug('Starting search worker thread %d...', i)
-        #if i == 0 or i == 3:
+        # if i == 0 or i == 3:
         if i == 0 or (args.beehive and i == worker_running_total):
-	#if i == 0 or (args.beehive and i == 26) or (args.beehive and i == 54) or (args.beehive and i == 104) or (args.beehive and i == 154) or (args.beehive and i == 204) or (args.beehive and i == 254):
+            # if i == 0 or (args.beehive and i == 26) or (args.beehive and i ==
+            # 54) or (args.beehive and i == 104) or (args.beehive and i == 154)
+            # or (args.beehive and i == 204) or (args.beehive and i == 254):
             search_items_queue = Queue()
             # Create the appropriate type of scheduler to handle the search
             # queue.
@@ -460,13 +460,14 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
 
             scheduler_array.append(scheduler)
             search_items_queue_array.append(search_items_queue)
-	    locations = generate_hive_locations(
+            locations = generate_hive_locations(
                 current_location, step_distance,
                 args.step_limit, len(scheduler_array))
             spawns = scheduler_array[hive_number].location_changed(locations[hive_number],
-                                                db_updates_queue)
-	    spawn_count.append(spawns)
+                                                                   db_updates_queue)
+            spawn_count.append(spawns)
             try:  # Can't have the scheduler die because of a DB deadlock.
+                log.info('initially creating hive %d ',hive_number)
                 scheduler_array[hive_number].schedule()
             except Exception as e:
                 log.error(
@@ -474,16 +475,16 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
                         repr(e)))
                 traceback.print_exc(file=sys.stdout)
                 time.sleep(10)
-	    decim_p, whole_n =math.modf((spawns / 120))
-	    worker_running_total += (whole_n+1)
-	    print 'hive number {}'.format(hive_number)
-	    hive_number += 1
-	    #print len(search_items_queue)
+            decim_p, whole_n = math.modf((spawns / 120))
+            worker_running_total += (whole_n + 1)
+            log.info('hive number %d created with %d workers assigned',hive_number,whole_n+1)
+            hive_number += 1
+            # print len(search_items_queue)
         # Set proxy for each worker, using round robin.
         proxy_display = 'No'
         proxy_url = False    # Will be assigned inside a search thread.
 
-        workerId = 'Worker {:03} H{:03}'.format(i,hive_number)
+        workerId = 'Worker {:03} H{:03}'.format(i, hive_number)
         threadStatus[workerId] = {
             'type': 'Worker',
             'message': 'Creating thread...',
@@ -498,25 +499,24 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
             'on_hold': False
         }
 
-	stop_bit = Event()
+        stop_bit = Event()
         stop_bit.clear()
-	stop_bits_array.append(stop_bit)
+        stop_bits_array.append(stop_bit)
         t = Thread(target=search_worker_thread,
-                   name='search-worker-{}-{}'.format(i,hive_number),
+                   name='search-worker-{:03}-{:03}'.format(i, hive_number),
                    args=(args, account_queue, account_failures,
                          account_captchas, search_items_queue, pause_bit, stop_bit,
                          threadStatus[workerId], db_updates_queue,
                          wh_queue, scheduler, key_scheduler))
         t.daemon = True
         t.start()
-	worker_hive_array.append(hive_number)
+        worker_hive_array.append(hive_number)
 
     # Keep track of the last status for accounts so we can calculate
     # what have changed since the last check
     last_account_status = {}
     last_worker_number = 0
     stats_timer = 0
-
 
     # The real work starts here but will halt on pause_bit.set().
     while True:
@@ -553,17 +553,27 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
 
         # If there are no search_items_queue either the loop has finished or
         # it's been cleared above.  Either way, time to fill it back up.
-	worker_stopped_count = 0
-	refreshed = False
+        worker_stopped_count = 0
+        refreshed = False
         for i in range(0, len(scheduler_array)):
             if scheduler_array[i].time_to_refresh_queue():
-		refreshed = True
+                refreshed = True
+        if refreshed:
+            for i in range(0, len(scheduler_array)):
+                scheduler_array[i].ready = False
+            time.sleep(20)
+        if refreshed:
+            for i in range(0, len(scheduler_array)):
+                log.info(i)
+                log.info(scheduler_array[i].refresh_date)
+                refreshed = True
                 threadStatus['Overseer']['message'] = (
                     'Search queue {} empty, scheduling ' +
                     'more items to scan.').format(i)
                 log.debug(
                     'Search queue %d empty, scheduling more items to scan.', i)
                 try:  # Can't have the scheduler die because of a DB deadlock.
+                    log.info('refresh')
                     spawns = scheduler_array[i].schedule()
 
                 except Exception as e:
@@ -572,54 +582,58 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
                             repr(e)))
                     traceback.print_exc(file=sys.stdout)
                     time.sleep(10)
-		#print spawns
-		spawn_count[i] = spawns
-		decim_p, whole_n =math.modf((spawns / 120))
-		whole_n = whole_n + 1
-		worker_running_total = 0
-		for j in range(0, len(worker_hive_array)):
-		    if worker_hive_array[j] == i+1:
-			worker_running_total += 1
-		        if worker_running_total > whole_n:
-			    stop_bits_array[j].set()
-			    worker_hive_array[j] = -1
-			    worker_stopped_count += 1
-			    print 'stopping {}'.format(j)
-		last_worker_number = len(worker_hive_array)
-		worker_running_total = last_worker_number
+                # print spawns
+                spawn_count[i] = spawns
+                decim_p, whole_n = math.modf((spawns / 120))
+                whole_n = whole_n + 1
+                worker_running_total = 0
+                for j in range(0, len(worker_hive_array)):
+                    if worker_hive_array[j] == i + 1:
+                        worker_running_total += 1
+                        if worker_running_total > whole_n:
+                            stop_bits_array[j].set()
+                            worker_hive_array[j] = -1
+                            worker_stopped_count += 1
+                            print 'stopping {}'.format(j)
+                last_worker_number = len(worker_hive_array)
+                worker_running_total = last_worker_number
 
-            else:
-                threadStatus['Overseer']['message'] = scheduler_array[
-                    i].get_overseer_message()
+        else:
+            threadStatus['Overseer']['message'] = scheduler_array[
+                i].get_overseer_message()
+        if refreshed:
+            for i in range(0, len(scheduler_array)):
+                scheduler_array[i].ready = True
 
         for i in range(0, len(scheduler_array)):
-	    spawns = spawn_count[i]
-	    #print spawns
-	    decim_p, whole_n =math.modf((spawns / 120))
-	    whole_n = whole_n + 1
-	    worker_running_total = 0
-	    for j in range(0, len(worker_hive_array)):
-		if worker_hive_array[j] == i+1:
-		    worker_running_total += 1
-	    if worker_running_total < whole_n:
-		#print whole_n
-		#print worker_running_total
-	        worker_to_add_count = int(whole_n - worker_running_total)
-	        last_worker_number = len(worker_hive_array)
-	        worker_running_total = last_worker_number
+            spawns = spawn_count[i]
+            # print spawns
+            decim_p, whole_n = math.modf((spawns / 120))
+            whole_n = whole_n + 1
+            worker_running_total = 0
+            for j in range(0, len(worker_hive_array)):
+                if worker_hive_array[j] == i + 1:
+                    worker_running_total += 1
+            if worker_running_total < whole_n:
+                # print whole_n
+                # print worker_running_total
+                worker_to_add_count = int(whole_n - worker_running_total)
+                last_worker_number = len(worker_hive_array)
+                worker_running_total = last_worker_number
 
                 l_count = 0
-	        for k in range(last_worker_number, last_worker_number+worker_to_add_count):
-		    for l in range(0,len(worker_hive_array)):
-			if worker_hive_array[l]>=0:
-			    l_count += 1
-		    if l_count < args.workers:
+                for k in range(last_worker_number, last_worker_number + worker_to_add_count):
+                    for l in range(0, len(worker_hive_array)):
+                        if worker_hive_array[l] >= 0:
+                            l_count += 1
+                    if l_count < args.workers:
                         log.debug('Starting search worker thread %d...', k)
                         search_items_queue = search_items_queue_array[i]
                         scheduler = scheduler_array[i]
                         proxy_display = 'No'
-                        proxy_url = False    # Will be assigned inside a search thread.
-                        workerId = 'Worker {:03} H{:03}'.format(k,i)
+                        # Will be assigned inside a search thread.
+                        proxy_url = False
+                        workerId = 'Worker {:03} H{:03}'.format(k, i)
                         threadStatus[workerId] = {
                             'type': 'Worker',
                             'message': 'Creating thread...',
@@ -634,28 +648,32 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
                             'on_hold': False
                         }
 
-	                stop_bit = Event()
+                        stop_bit = Event()
                         stop_bit.clear()
-	                stop_bits_array.append(stop_bit)
+                        stop_bits_array.append(stop_bit)
                         t = Thread(target=search_worker_thread,
-                                   name='search-worker-{}-{}'.format(k,i),
+                                   name='search-worker-{:03}-{:03}'.format(k, i),
                                    args=(args, account_queue, account_failures,
                                          account_captchas, search_items_queue, pause_bit, stop_bit,
-                                         threadStatus[workerId], db_updates_queue,
+                                         threadStatus[
+                                             workerId], db_updates_queue,
                                          wh_queue, scheduler, key_scheduler))
                         t.daemon = True
                         t.start()
-		        worker_hive_array.append(i)
-			worker_stopped_count += -1
+                        worker_hive_array.append(i)
+                        worker_stopped_count += -1
 
-	last_worker_number = len(worker_hive_array)
-	worker_running_total = last_worker_number
-	if 1 ==1:
-            for i in range(last_worker_number, last_worker_number+worker_stopped_count):
+        last_worker_number = len(worker_hive_array)
+        worker_running_total = last_worker_number
+        if 1 == 1:
+            for i in range(last_worker_number, last_worker_number + worker_stopped_count):
                 log.debug('Starting search worker thread %d...', i)
-                #if i == 0 or i == 3:
+                # if i == 0 or i == 3:
                 if i == last_worker_number or (args.beehive and i == worker_running_total):
-	        #if i == 0 or (args.beehive and i == 26) or (args.beehive and i == 54) or (args.beehive and i == 104) or (args.beehive and i == 154) or (args.beehive and i == 204) or (args.beehive and i == 254):
+                    # if i == 0 or (args.beehive and i == 26) or (args.beehive
+                    # and i == 54) or (args.beehive and i == 104) or
+                    # (args.beehive and i == 154) or (args.beehive and i ==
+                    # 204) or (args.beehive and i == 254):
                     search_items_queue = Queue()
                     # Create the appropriate type of scheduler to handle the search
                     # queue.
@@ -663,17 +681,18 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
                         args.scheduler, [search_items_queue], threadStatus, args)
                     scheduler_array.append(scheduler)
                     search_items_queue_array.append(search_items_queue)
-		    #print current_location
-		    #print args.step_limit
-		    #print step_distance
-		    #print len(scheduler_array)
-	            locations = generate_hive_locations(
+                    # print current_location
+                    # print args.step_limit
+                    # print step_distance
+                    # print len(scheduler_array)
+                    locations = generate_hive_locations(
                         current_location, step_distance,
                         args.step_limit, len(scheduler_array))
                     spawns = scheduler_array[hive_number].location_changed(locations[hive_number],
-                                                        db_updates_queue)
-		    spawn_count.append(spawns)
+                                                                           db_updates_queue)
+                    spawn_count.append(spawns)
                     try:  # Can't have the scheduler die because of a DB deadlock.
+                        log.info('extra')
                         scheduler_array[hive_number].schedule()
                     except Exception as e:
                         log.error(
@@ -681,15 +700,15 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
                                 repr(e)))
                         traceback.print_exc(file=sys.stdout)
                         time.sleep(10)
-	            decim_p, whole_n =math.modf((spawns / 120))
-	            worker_running_total += (whole_n+1)
-	            #print 'hive number {}'.format(hive_number)
-	            hive_number += 1
-	        #print len(search_items_queue)
+                    decim_p, whole_n = math.modf((spawns / 120))
+                    worker_running_total += (whole_n + 1)
+                    # print 'hive number {}'.format(hive_number)
+                    hive_number += 1
+                # print len(search_items_queue)
                 # Set proxy for each worker, using round robin.
                 proxy_display = 'No'
                 proxy_url = False    # Will be assigned inside a search thread.
-                workerId = 'Worker {:03} H{:03}'.format(i,hive_number)
+                workerId = 'Worker {:03} H{:03}'.format(i, hive_number)
                 threadStatus[workerId] = {
                     'type': 'Worker',
                     'message': 'Creating thread...',
@@ -704,22 +723,30 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
                     'on_hold': False
                 }
 
-	        stop_bit = Event()
+                stop_bit = Event()
                 stop_bit.clear()
-	        stop_bits_array.append(stop_bit)
+                stop_bits_array.append(stop_bit)
                 t = Thread(target=search_worker_thread,
-                           name='search-worker-{}-{}'.format(i,hive_number),
+                           name='search-worker-{:03}-{:03}'.format(i, hive_number),
                            args=(args, account_queue, account_failures,
                                  account_captchas, search_items_queue, pause_bit, stop_bit,
                                  threadStatus[workerId], db_updates_queue,
                                  wh_queue, scheduler, key_scheduler))
                 t.daemon = True
                 t.start()
-	        worker_hive_array.append(hive_number)
+                worker_hive_array.append(hive_number)
 
+        # Now we just give a little pause here.
+        time.sleep(1)
 
         # Let's update the total stats and add that info to message
-        update_total_stats(threadStatus, last_account_status)
+        try:  # Can't have the scheduler die because of a status time issue.
+            update_total_stats(threadStatus, last_account_status)
+        except Exception as e:
+            log.error(
+                'Schedule update stats had an Exception: {}.'.format(
+                    repr(e)))
+            traceback.print_exc(file=sys.stdout)
         threadStatus['Overseer']['message'] += '\n' + get_stats_message(
             threadStatus)
 
@@ -739,9 +766,6 @@ def search_overseer_thread(args, new_location_queue, pause_bit, heartb,
         if args.webhook_scheduler_updates:
             wh_status_update(args, threadStatus['Overseer'], wh_queue,
                              scheduler_array[0])
-
-        # Now we just give a little pause here.
-        time.sleep(1)
 
 
 
@@ -805,10 +829,8 @@ def get_stats_message(threadStatus):
     return message
 
 
-def update_total_stats(threadStatus2, last_account_status):
-    threadStatus = copy.deepcopy(threadStatus2)
-    overseer = threadStatus2['Overseer']
-
+def update_total_stats(threadStatus, last_account_status):
+    overseer = threadStatus['Overseer']
     # Calculate totals.
     usercount = 0
     current_accounts = Set()
@@ -984,7 +1006,8 @@ def search_worker_thread(args, account_queue, account_failures,
                 while pause_bit.is_set():
                     status['message'] = 'Scanning paused.'
                     time.sleep(2)
-
+                while not scheduler.ready:
+                    time.sleep(1)
                 # If this account has been messing up too hard, let it rest.
                 if ((args.max_failures > 0) and
                         (consecutive_fails >= args.max_failures)):
@@ -1323,6 +1346,7 @@ def search_worker_thread(args, account_queue, account_failures,
             time.sleep(args.scan_delay)
     account_queue.put(account)
     status['type'] = 'Stopped'
+
 
 def map_request(api, position, no_jitter=False):
     # Create scan_location to send to the api based off of position, because

@@ -44,7 +44,6 @@ class MyRetryDB(RetryOperationalError, PooledMySQLDatabase):
     pass
 
 
-
 def init_database(app):
     if args.db_type == 'mysql':
         log.info('Connecting to MySQL database on %s:%i...',
@@ -888,46 +887,31 @@ class ScannedLocation(BaseModel):
 
     @classmethod
     def get_band_count_by_cells(cls, cells):
-
-        query = (cls
-                 .select()
-                 .where(ScannedLocation.cellid << cells)
-                 .dicts())
-
-        filled = 0
-        for sl in query:
-            bands = [sl['band' + str(i)] for i in range(1, 6)]
-            filled += reduce(lambda x, y: x + (y > -1), bands, 0)
-
-        return filled
-
-    @classmethod
-    def eget_band_count_by_cells(cls, cells):
-
-        query = (cls
-                 .select(fn.SUM(case(None, (
-                    (cls.band1 >= 0 , 1)), 0)+case(None, (
-                    (cls.band3 >= 0 , 1)), 0)+case(None, (
-                    (cls.band4 >= 0 , 1)), 0)+case(None, (
-                    (cls.band5 >= 0 , 1)), 0)).alias('band_count'))
-                 .where(ScannedLocation.cellid << cells)
-                 ).scalar()
-
-        return query[0]
+        return int(cls
+                   .select(fn.SUM(case(None, ((ScannedLocation.band1 == -1, 0),
+                                                (ScannedLocation.band1 == -1, 0)), 1)
+                                  + case(None, ((ScannedLocation.band2 == -1, 0),
+                                                (ScannedLocation.band2 == -1, 0)), 1)
+                                  + case(None, ((ScannedLocation.band3 == -1, 0),
+                                                (ScannedLocation.band3 == -1, 0)), 1)
+                                  + case(None, ((ScannedLocation.band4 == -1, 0),
+                                                (ScannedLocation.band4 == -1, 0)), 1)
+                                  + case(None, ((ScannedLocation.band5 == -1, 0),
+                                                (ScannedLocation.band5 == -1, 0)), 1)).alias('band_count'))
+                   .where(ScannedLocation.cellid << cells)
+                   .scalar() or 0)
 
     @classmethod
-    def fget_band_count_by_cells(cls, cells):
+    def get_band_count_by_cells2(cls, cells):
 
-        return (ScannedLocation
-                 .select(fn.SUM(fn.IF(ScannedLocation.band1==-1, 0, 1)
-                        +fn.IF(ScannedLocation.band2==-1, 0, 1)
-                        +fn.IF(ScannedLocation.band3==-1, 0, 1)
-                        +fn.IF(ScannedLocation.band4==-1, 0, 1)
-                        +fn.IF(ScannedLocation.band5==-1, 0, 1)).alias('band_count'))
-                 .where(ScannedLocation.cellid << cells)
-                 .scalar())
-
-
+        return int(ScannedLocation
+                   .select(fn.SUM(fn.IF(ScannedLocation.band1 == -1, 0, 1)
+                                  + fn.IF(ScannedLocation.band2 == -1, 0, 1)
+                                  + fn.IF(ScannedLocation.band3 == -1, 0, 1)
+                                  + fn.IF(ScannedLocation.band4 == -1, 0, 1)
+                                  + fn.IF(ScannedLocation.band5 == -1, 0, 1)).alias('band_count'))
+                   .where(ScannedLocation.cellid << cells)
+                   .scalar())
 
     @classmethod
     def find_in_locs(cls, loc, locs):
@@ -989,20 +973,20 @@ class ScannedLocation(BaseModel):
                          .alias('spcells'))
         # Allocate a spawnpoint to one cell only
         one_sp_scan_loc = (ScanSpawnPoint
-                            .select(ScanSpawnPoint.spawnpoint,
+                           .select(ScanSpawnPoint.spawnpoint,
                                    fn.MAX(ScanSpawnPoint.scannedlocation).alias(
-                                'cellid'))
-                            .join(sp_from_cells, on=sp_from_cells.c.spawnpoint_id
-                                        == ScanSpawnPoint.spawnpoint)
-                            .group_by(ScanSpawnPoint.spawnpoint)
-                            .alias('maxscan'))
+                                       'cellid'))
+                           .join(sp_from_cells, on=sp_from_cells.c.spawnpoint_id
+                                 == ScanSpawnPoint.spawnpoint)
+                           .group_by(ScanSpawnPoint.spawnpoint)
+                           .alias('maxscan'))
         # As scan locations overlap, spawnpoints can belong to up to 3 locations
         # This sub-query effectively assigns each SP to exactly one location.
 
         query = (SpawnPoint
                  .select(SpawnPoint, one_sp_scan_loc.c.cellid)
                  .join(one_sp_scan_loc, on=(SpawnPoint.id ==
-                                    one_sp_scan_loc.c.spawnpoint_id))
+                                            one_sp_scan_loc.c.spawnpoint_id))
                  .where(one_sp_scan_loc.c.cellid << cells)
                  .dicts())
         l = list(query)
@@ -1065,8 +1049,8 @@ class ScannedLocation(BaseModel):
     # Checks if now falls within an unfilled band for a scanned location.
     # Returns the updated scan location dict.
     @classmethod
-    def update_band(cls, scan):
-        now_date = datetime.utcnow()
+    def update_band(cls, scan, now_date):
+
         scan['last_modified'] = now_date
 
         if scan['done']:
@@ -1360,7 +1344,7 @@ class SpawnPoint(BaseModel):
 
     # Return a list of dicts with the next spawn times.
     @classmethod
-    def get_times(cls, cell, scan, now_date, scan_delay,
+    def get_times(cls, cell, scan, now_date, reschedule_minutes, scan_delay,
                   cell_to_linked_spawn_points, sp_by_id):
         l = []
         now_secs = date_secs(now_date)
@@ -1373,7 +1357,7 @@ class SpawnPoint(BaseModel):
                 continue
 
             endpoints = SpawnPoint.start_end(sp, scan_delay)
-            cls.add_if_not_scanned('spawn', l, sp, scan, endpoints[0],
+            cls.add_if_not_scanned('spawn', l, sp, scan, reschedule_minutes, endpoints[0],
                                    endpoints[1], now_date, now_secs, sp_by_id)
 
             # Check to see if still searching for valid TTH.
@@ -1385,14 +1369,16 @@ class SpawnPoint(BaseModel):
             end = sp['earliest_unseen']
 
             cls.add_if_not_scanned(
-                'TTH', l, sp, scan, start, end, now_date, now_secs, sp_by_id)
+                'TTH', l, sp, scan, reschedule_minutes, start, end, now_date, now_secs, sp_by_id)
 
         return l
 
     @classmethod
-    def add_if_not_scanned(cls, kind, l, sp, scan, start, end, now_date,
+    def add_if_not_scanned(cls, kind, l, sp, scan, reschedule_minutes, start, end, now_date,
                            now_secs, sp_by_id):
         # Make sure later than now_secs.
+        orig_s = start
+        orig_e = end
         while end < now_secs:
             start, end = start + 3600, end + 3600
 
@@ -1401,8 +1387,9 @@ class SpawnPoint(BaseModel):
             start -= 3600
 
         last_scanned = sp_by_id[sp['id']]['last_scanned']
-        if (now_date - last_scanned).total_seconds() > now_secs - start:
+        if (now_date - last_scanned).total_seconds() > now_secs - start and start<now_secs + (reschedule_minutes*90):
             l.append(ScannedLocation._q_init(scan, start, end, kind, sp['id']))
+            log.info('Adding to queue sp %s start %d end %d hind %s now %d os %d oe %d lastsc %s',sp['id'],start,end,kind,now_secs,orig_s,orig_e,last_scanned)
 
     # Given seconds after the hour and a spawnpoint dict, return which quartile
     # of the spawnpoint the secs falls in.
@@ -1410,6 +1397,7 @@ class SpawnPoint(BaseModel):
     def get_quartile(secs, sp):
         return int(((secs - sp['earliest_unseen'] + 15 * 60 + 3600 - 1) %
                     3600) / 15 / 60)
+
     @classmethod
     def raw_sql(query):
         db = query.model_class._meta.database
@@ -1424,22 +1412,21 @@ class SpawnPoint(BaseModel):
                          .alias('spcells'))
         # Allocate a spawnpoint to one cell only
         one_sp_scan_loc = (ScanSpawnPoint
-                            .select(ScanSpawnPoint.spawnpoint,
+                           .select(ScanSpawnPoint.spawnpoint,
                                    fn.MAX(ScanSpawnPoint.scannedlocation).alias(
-                                'Max_ScannedLocation_id'))
-                            .join(sp_from_cells, on=sp_from_cells.c.spawnpoint_id
-                                        == ScanSpawnPoint.spawnpoint)
-                            .group_by(ScanSpawnPoint.spawnpoint)
-                            .alias('maxscan'))
+                                       'Max_ScannedLocation_id'))
+                           .join(sp_from_cells, on=sp_from_cells.c.spawnpoint_id
+                                 == ScanSpawnPoint.spawnpoint)
+                           .group_by(ScanSpawnPoint.spawnpoint)
+                           .alias('maxscan'))
 
         query = (cls
-                  .select(cls)
-                  .join(one_sp_scan_loc,
-                            on=(one_sp_scan_loc.c.spawnpoint_id == cls.id))
-                  .where(one_sp_scan_loc.c.Max_ScannedLocation_id << cells)
-                  .dicts())
+                 .select(cls)
+                 .join(one_sp_scan_loc,
+                       on=(one_sp_scan_loc.c.spawnpoint_id == cls.id))
+                 .where(one_sp_scan_loc.c.Max_ScannedLocation_id << cells)
+                 .dicts())
         log.info(query.database.get_cursor().mogrify(*query.sql()))
-        #print cls.raw_sql(query)
         in_hex = []
         for spawn in list(query):
             in_hex.append(spawn)
@@ -1466,7 +1453,7 @@ class SpawnpointDetectionData(BaseModel):
 
     @staticmethod
     def set_default_earliest_unseen(sp):
-        sp['earliest_unseen'] = (sp['latest_seen'] + 14 * 60) % 3600
+        sp['earliest_unseen'] = (sp['latest_seen'] + 15 * 60) % 3600
 
     @classmethod
     def classify(cls, sp, scan_loc, now_secs, sighting=None):
@@ -1488,6 +1475,7 @@ class SpawnpointDetectionData(BaseModel):
         # Get past sightings.
         query = list(cls.select()
                         .where(cls.spawnpoint_id == sp['id'])
+                        .order_by(cls.scan_time)
                         .dicts())
 
         if sighting:
@@ -1540,8 +1528,8 @@ class SpawnpointDetectionData(BaseModel):
 
                 # if we don't have a earliest_unseen yet or if the kind of
                 # spawn has changed, reset to latest_seen + 14 minutes.
-                if not sp['earliest_unseen'] or sp['kind'] != old_kind:
-                    cls.set_default_earliest_unseen(sp)
+            if not sp['earliest_unseen'] or sp['kind'] != old_kind:
+                cls.set_default_earliest_unseen(sp)
 
             return
 
@@ -1738,7 +1726,7 @@ class Token(flaskDb.Model):
                 if tokens:
                     log.debug('Retrived Token IDs: {}'.format(token_ids))
                     result = DeleteQuery(Token).where(
-                                 Token.id << token_ids).execute()
+                        Token.id << token_ids).execute()
                     log.debug('Deleted {} tokens.'.format(result))
         except OperationalError as e:
             log.error('Failed captcha token transactional query: {}'.format(e))
@@ -1773,12 +1761,12 @@ def parse_map(args, map_dict, step_location, db_update_queue, wh_update_queue,
     sightings = {}
     new_spawn_points = []
     sp_id_list = []
-    now_secs = date_secs(now_date)
 
     # Consolidate the individual lists in each cell into two lists of Pokemon
     # and a list of forts.
     cells = map_dict['responses']['GET_MAP_OBJECTS']['map_cells']
     for cell in cells:
+        now_date = datetime.utcfromtimestamp(cell['current_timestamp_ms']/1000)
         nearby_pokemon += cell.get('nearby_pokemons', [])
         # Parse everything for stats (counts).  Future enhancement -- we don't
         # necessarily need to know *how many* forts/wild/nearby were found but
@@ -1787,7 +1775,7 @@ def parse_map(args, map_dict, step_location, db_update_queue, wh_update_queue,
         wild_pokemon += cell.get('wild_pokemons', [])
 
         forts += cell.get('forts', [])
-
+    now_secs = date_secs(now_date)
     # If there are no wild or nearby Pokemon . . .
     if not wild_pokemon and not nearby_pokemon:
         # . . . and there are no gyms/pokestops then it's unusable/bad.
@@ -1809,7 +1797,7 @@ def parse_map(args, map_dict, step_location, db_update_queue, wh_update_queue,
 
         if abandon_loc:
             scan_loc = ScannedLocation.get_by_loc(step_location)
-            ScannedLocation.update_band(scan_loc)
+            ScannedLocation.update_band(scan_loc,now_date)
             db_update_queue.put((ScannedLocation, {0: scan_loc}))
 
             return {
@@ -1821,7 +1809,7 @@ def parse_map(args, map_dict, step_location, db_update_queue, wh_update_queue,
 
     scan_loc = ScannedLocation.get_by_loc(step_location)
     done_already = scan_loc['done']
-    ScannedLocation.update_band(scan_loc)
+    ScannedLocation.update_band(scan_loc,now_date)
     just_completed = not done_already and scan_loc['done']
 
     if wild_pokemon and config['parse_pokemon']:
@@ -2106,18 +2094,19 @@ def parse_map(args, map_dict, step_location, db_update_queue, wh_update_queue,
                 sp['missed_count'] += 1
                 spawn_points[sp['id']] = sp
                 log.warning('%s kind spawnpoint %s has no Pokemon %d times '
-                            'in a row.', sp['kind'], sp['id'],
-                            sp['missed_count'])
+                            'in a row. end %d start %d nowsec %d', sp[
+                                'kind'], sp['id'],
+                            sp['missed_count'], endpoints[1], endpoints[0], now_secs)
                 log.info('Possible causes: Still doing initial scan, super '
                          'rare double spawnpoint during')
                 log.info('hidden period, or Niantic has removed spawnpoint.')
 
         if (not SpawnPoint.tth_found(sp) and scan_loc['done'] and
-                (sp['earliest_unseen'] - sp['latest_seen'] -
+                (now_secs - sp['latest_seen'] -
                  args.spawn_delay) % 3600 < 60):
             log.warning('Spawnpoint %s was unable to locate a TTH, with only '
                         '%ss after Pokemon last seen.', sp['id'],
-                        (sp['earliest_unseen'] - sp['latest_seen']) % 3600)
+                        (now_secs - sp['latest_seen']) % 3600)
             log.info('Restarting current 15 minute search for TTH.')
             if sp['id'] not in sp_id_list:
                 SpawnpointDetectionData.classify(sp, scan_loc, now_secs)
