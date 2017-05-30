@@ -44,7 +44,7 @@ from pgoapi import utilities as util
 from pgoapi.hash_server import (HashServer, BadHashRequestException,
                                 HashingOfflineException)
 from .models import (parse_map, GymDetails, parse_gyms, MainWorker,
-                     WorkerStatus, HashKeys)
+                     WorkerStatus, HashKeys, AccountDevice)
 from .utils import now, clear_dict_response
 from .transform import get_new_coords, jitter_location
 from .account import (setup_api, check_login, get_tutorial_state,
@@ -805,7 +805,12 @@ def search_worker_thread(args, account_queue, account_sets, account_failures,
             # for stat purposes.
             consecutive_noitems = 0
 
-            api = setup_api(args, status)
+            # So the idea is to store the device that gets generated. This way
+            # we can keep using the same device rather than using a random
+            # one each time we login
+            device_info = AccountDevice.get_device_info(account['username'])
+            api, device_info = setup_api(args, status, device_info)
+            dbq.put((AccountDevice, {0: AccountDevice.db_format(device_info,account['username'])}))
 
             # The forever loop for the searches.
             while True:
