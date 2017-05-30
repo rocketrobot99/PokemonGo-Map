@@ -810,7 +810,8 @@ def search_worker_thread(args, account_queue, account_sets, account_failures,
             # one each time we login
             device_info = AccountDevice.get_device_info(account['username'])
             api, device_info = setup_api(args, status, device_info)
-            dbq.put((AccountDevice, {0: AccountDevice.db_format(device_info,account['username'])}))
+            dbq.put((AccountDevice, {0: AccountDevice.db_format(
+                                        device_info, account['username'])}))
 
             # The forever loop for the searches.
             while True:

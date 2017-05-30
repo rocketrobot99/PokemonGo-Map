@@ -51,7 +51,7 @@ def setup_api(args, status, device_info):
             'http': status['proxy_url'],
             'https': status['proxy_url']})
 
-    #return api
+    # return api and device info
     return api, device_info
 
 

@@ -1116,6 +1116,7 @@ class MainWorker(BaseModel):
 
         return dict
 
+
 class AccountDevice(BaseModel):
     username = Utf8mb4CharField(primary_key=True, max_length=50)
     firmware_type = Utf8mb4CharField(null=True)
@@ -1129,7 +1130,7 @@ class AccountDevice(BaseModel):
 
     @staticmethod
     def db_format(device_info, username):
-        account_device = {'username' : username}
+        account_device = {'username': username}
         account_device.update(device_info)
 
         return account_device
@@ -1170,6 +1171,7 @@ class AccountDevice(BaseModel):
                 time.sleep(1)
 
         return result
+
 
 class WorkerStatus(BaseModel):
     username = Utf8mb4CharField(primary_key=True, max_length=50)
