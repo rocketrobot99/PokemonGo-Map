@@ -1170,7 +1170,7 @@ class AccountDevice(BaseModel):
                 traceback.print_exc(file=sys.stdout)
                 time.sleep(1)
 
-        return result
+        return result, result['device_id']
 
 
 class WorkerStatus(BaseModel):

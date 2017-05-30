@@ -808,10 +808,17 @@ def search_worker_thread(args, account_queue, account_sets, account_failures,
             # So the idea is to store the device that gets generated. This way
             # we can keep using the same device rather than using a random
             # one each time we login
-            device_info = AccountDevice.get_device_info(account['username'])
+            device_info, device_id = AccountDevice.get_device_info(
+                                                        account['username'])
             api, device_info = setup_api(args, status, device_info)
-            dbq.put((AccountDevice, {0: AccountDevice.db_format(
+            if device_id is None:
+                dbq.put((AccountDevice, {0: AccountDevice.db_format(
                                         device_info, account['username'])}))
+                log.debug('New device added to account {} with id {}'.format(
+                            account['username'], device_info['device_id']))
+            else:
+                log.debug('Device found for account {} with id {}'.format(
+                            account['username'], device_info['device_id']))
 
             # The forever loop for the searches.
             while True:
